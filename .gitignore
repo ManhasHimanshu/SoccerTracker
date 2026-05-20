@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+.eggs/
+
+# Node
+node_modules/
+dist/
+.env
+.env.local
+
+# AWS
+.aws-sam/
+cdk.out/
+*.cfn-output
+
+# Model weights (too large for Git)
+*.pt
+*.onnx
+*.engine
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
