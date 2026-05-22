@@ -1,0 +1,6 @@
+ultralytics==8.3.0
+torch==2.5.1
+torchvision==0.20.1
+Pillow==10.4.0
+numpy==1.26.4
+boto3==1.37.38
