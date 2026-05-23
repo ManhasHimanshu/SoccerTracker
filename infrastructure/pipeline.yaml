@@ -1,0 +1,215 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Soccer Ball Tracker - Pipeline Stack (Step Functions + Lambda)'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    Description: Deployment environment
+
+  SageMakerEndpoint:
+    Type: String
+    Default: sbt-yolov8-endpoint
+    Description: Name of the SageMaker endpoint for YOLOv8 inference
+
+Resources:
+
+  # ─────────────────────────────────────────
+  # IAM Role for Lambda Functions
+  # ─────────────────────────────────────────
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'sbt-lambda-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SBTLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Allow Lambda to read/write S3
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::sbt-videos-${Environment}-${AWS::AccountId}'
+                  - !Sub 'arn:aws:s3:::sbt-videos-${Environment}-${AWS::AccountId}/*'
+              # Allow Lambda to read/write DynamoDB
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:BatchWriteItem
+                  - dynamodb:Query
+                Resource:
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/sbt-tracking-${Environment}'
+              # Allow Lambda to call SageMaker endpoint
+              - Effect: Allow
+                Action:
+                  - sagemaker:InvokeEndpoint
+                Resource: '*'
+
+  # ─────────────────────────────────────────
+  # IAM Role for Step Functions
+  # ─────────────────────────────────────────
+  StepFunctionsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'sbt-sfn-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SBTStepFunctionsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Allow Step Functions to invoke Lambda functions
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt ExtractFramesFunction.Arn
+                  - !GetAtt RunInferenceFunction.Arn
+                  - !GetAtt StoreResultsFunction.Arn
+
+  # ─────────────────────────────────────────
+  # Lambda Functions
+  # ─────────────────────────────────────────
+  ExtractFramesFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'sbt-extract-frames-${Environment}'
+      Runtime: python3.11
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 300
+      MemorySize: 1024
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "placeholder"}
+
+  RunInferenceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'sbt-run-inference-${Environment}'
+      Runtime: python3.11
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 900
+      MemorySize: 1024
+      Environment:
+        Variables:
+          SAGEMAKER_ENDPOINT: !Ref SageMakerEndpoint
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "placeholder"}
+
+  StoreResultsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'sbt-store-results-${Environment}'
+      Runtime: python3.11
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          TRACKING_TABLE: !Sub 'sbt-tracking-${Environment}'
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "placeholder"}
+
+  # ─────────────────────────────────────────
+  # Step Functions State Machine
+  # ─────────────────────────────────────────
+  TrackingPipeline:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub 'sbt-tracking-pipeline-${Environment}'
+      RoleArn: !GetAtt StepFunctionsExecutionRole.Arn
+      Definition:
+        Comment: Soccer Ball Tracker - Video Processing Pipeline
+        StartAt: ExtractFrames
+        States:
+          ExtractFrames:
+            Type: Task
+            Resource: !GetAtt ExtractFramesFunction.Arn
+            Next: RunInference
+            Retry:
+              - ErrorEquals: ['States.ALL']
+                IntervalSeconds: 5
+                MaxAttempts: 2
+                BackoffRate: 2
+            Catch:
+              - ErrorEquals: ['States.ALL']
+                Next: PipelineFailed
+          RunInference:
+            Type: Task
+            Resource: !GetAtt RunInferenceFunction.Arn
+            Next: StoreResults
+            Retry:
+              - ErrorEquals: ['States.ALL']
+                IntervalSeconds: 10
+                MaxAttempts: 2
+                BackoffRate: 2
+            Catch:
+              - ErrorEquals: ['States.ALL']
+                Next: PipelineFailed
+          StoreResults:
+            Type: Task
+            Resource: !GetAtt StoreResultsFunction.Arn
+            Next: PipelineSucceeded
+            Retry:
+              - ErrorEquals: ['States.ALL']
+                IntervalSeconds: 5
+                MaxAttempts: 2
+                BackoffRate: 2
+            Catch:
+              - ErrorEquals: ['States.ALL']
+                Next: PipelineFailed
+          PipelineSucceeded:
+            Type: Succeed
+          PipelineFailed:
+            Type: Fail
+            Error: PipelineError
+            Cause: One or more pipeline steps failed
+
+Outputs:
+  StateMachineArn:
+    Description: ARN of the Step Functions state machine
+    Value: !Ref TrackingPipeline
+    Export:
+      Name: !Sub 'sbt-pipeline-arn-${Environment}'
+
+  ExtractFramesFunctionArn:
+    Description: ARN of the Extract Frames Lambda
+    Value: !GetAtt ExtractFramesFunction.Arn
+
+  RunInferenceFunctionArn:
+    Description: ARN of the Run Inference Lambda
+    Value: !GetAtt RunInferenceFunction.Arn
+
+  StoreResultsFunctionArn:
+    Description: ARN of the Store Results Lambda
+    Value: !GetAtt StoreResultsFunction.Arn
