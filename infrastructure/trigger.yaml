@@ -1,0 +1,167 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Soccer Ball Tracker - Trigger Stack (S3 Event + Trigger Lambda)'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    Description: Deployment environment
+
+Resources:
+
+  # ─────────────────────────────────────────
+  # IAM Role for Trigger Lambda
+  # ─────────────────────────────────────────
+  TriggerLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'sbt-trigger-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SBTTriggerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Allow trigger Lambda to start Step Functions executions
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource:
+                  - !Sub 'arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:sbt-tracking-pipeline-${Environment}'
+
+  # ─────────────────────────────────────────
+  # Trigger Lambda Function
+  # ─────────────────────────────────────────
+  TriggerPipelineFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'sbt-trigger-pipeline-${Environment}'
+      Runtime: python3.11
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt TriggerLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          STATE_MACHINE_ARN: !Sub 'arn:aws:states:${AWS::Region}:${AWS::AccountId}:stateMachine:sbt-tracking-pipeline-${Environment}'
+      Code:
+        ZipFile: |
+          def lambda_handler(event, context):
+              return {"status": "placeholder"}
+
+  # ─────────────────────────────────────────
+  # Permission for S3 to invoke the Lambda
+  # ─────────────────────────────────────────
+  S3InvokeLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt TriggerPipelineFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub 'arn:aws:s3:::sbt-videos-${Environment}-${AWS::AccountId}'
+
+  # ─────────────────────────────────────────
+  # S3 Event Notification
+  # ─────────────────────────────────────────
+  S3TriggerCustomResource:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: S3InvokeLambdaPermission
+    Properties:
+      ServiceToken: !GetAtt S3NotificationSetupFunction.Arn
+      BucketName: !Sub 'sbt-videos-${Environment}-${AWS::AccountId}'
+      LambdaArn: !GetAtt TriggerPipelineFunction.Arn
+
+  # ─────────────────────────────────────────
+  # Custom Resource Lambda to set up S3 notification
+  # (needed because CloudFormation can't modify
+  # existing S3 buckets' notification configs)
+  # ─────────────────────────────────────────
+  S3NotificationSetupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'sbt-s3-notification-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3NotificationPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutBucketNotification
+                  - s3:GetBucketNotification
+                Resource:
+                  - !Sub 'arn:aws:s3:::sbt-videos-${Environment}-${AWS::AccountId}'
+
+  S3NotificationSetupFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'sbt-s3-notification-setup-${Environment}'
+      Runtime: python3.11
+      Handler: index.handler
+      Role: !GetAtt S3NotificationSetupRole.Arn
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import cfnresponse
+
+          def handler(event, context):
+              s3 = boto3.client('s3')
+              try:
+                  if event['RequestType'] in ['Create', 'Update']:
+                      s3.put_bucket_notification_configuration(
+                          Bucket=event['ResourceProperties']['BucketName'],
+                          NotificationConfiguration={
+                              'LambdaFunctionConfigurations': [
+                                  {
+                                      'LambdaFunctionArn': event['ResourceProperties']['LambdaArn'],
+                                      'Events': ['s3:ObjectCreated:*'],
+                                      'Filter': {
+                                          'Key': {
+                                              'FilterRules': [
+                                                  {'Name': 'prefix', 'Value': 'videos/'},
+                                                  {'Name': 'suffix', 'Value': '.mp4'}
+                                              ]
+                                          }
+                                      }
+                                  }
+                              ]
+                          }
+                      )
+                  elif event['RequestType'] == 'Delete':
+                      s3.put_bucket_notification_configuration(
+                          Bucket=event['ResourceProperties']['BucketName'],
+                          NotificationConfiguration={}
+                      )
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              except Exception as e:
+                  print(f"Error: {e}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {})
+
+Outputs:
+  TriggerFunctionArn:
+    Description: ARN of the Trigger Pipeline Lambda
+    Value: !GetAtt TriggerPipelineFunction.Arn
+
+  TriggerFunctionName:
+    Description: Name of the Trigger Pipeline Lambda
+    Value: !Ref TriggerPipelineFunction
