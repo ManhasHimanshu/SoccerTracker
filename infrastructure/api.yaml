@@ -114,7 +114,8 @@ Resources:
       RestApiId: !Ref SbtApi
       ResourceId: !Ref UploadUrlResource
       HttpMethod: GET
-      AuthorizationType: NONE
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: 088ezl
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
@@ -141,7 +142,8 @@ Resources:
       RestApiId: !Ref SbtApi
       ResourceId: !Ref StatusVideoIdResource
       HttpMethod: GET
-      AuthorizationType: NONE
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: 088ezl
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
@@ -168,7 +170,8 @@ Resources:
       RestApiId: !Ref SbtApi
       ResourceId: !Ref ResultsVideoIdResource
       HttpMethod: GET
-      AuthorizationType: NONE
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: 088ezl
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
