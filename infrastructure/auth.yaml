@@ -1,0 +1,130 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Cognito Authentication for Soccer Ball Tracker
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+  GoogleClientId:
+    Type: String
+    Description: Google OAuth Client ID
+  GoogleClientSecret:
+    Type: String
+    NoEcho: true
+    Description: Google OAuth Client Secret
+
+Resources:
+
+  # ─── Cognito User Pool ────────────────────────────────────────────────────────
+
+  SbtUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub sbt-user-pool-${Environment}
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+        - Name: name
+          AttributeDataType: String
+          Required: false
+          Mutable: true
+      UserPoolTags:
+        Environment: !Ref Environment
+        Project: soccer-ball-tracker
+
+  # ─── Google Identity Provider ─────────────────────────────────────────────────
+
+  GoogleIdentityProvider:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    Properties:
+      UserPoolId: !Ref SbtUserPool
+      ProviderName: Google
+      ProviderType: Google
+      ProviderDetails:
+        client_id: !Ref GoogleClientId
+        client_secret: !Ref GoogleClientSecret
+        authorize_scopes: "email profile openid"
+      AttributeMapping:
+        email: email
+        name: name
+
+  # ─── Cognito User Pool Client ─────────────────────────────────────────────────
+
+  SbtUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: GoogleIdentityProvider
+    Properties:
+      ClientName: !Sub sbt-client-${Environment}
+      UserPoolId: !Ref SbtUserPool
+      GenerateSecret: false
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - email
+        - openid
+        - profile
+      AllowedOAuthFlowsUserPoolClient: true
+      SupportedIdentityProviders:
+        - COGNITO
+        - Google
+      CallbackURLs:
+        - http://localhost:3000/callback
+      LogoutURLs:
+        - http://localhost:3000
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  # ─── Cognito Domain ───────────────────────────────────────────────────────────
+
+  SbtUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub sbt-auth-${Environment}
+      UserPoolId: !Ref SbtUserPool
+
+  # ─── API Gateway Authorizer ───────────────────────────────────────────────────
+
+  SbtApiAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: !Sub sbt-authorizer-${Environment}
+      RestApiId: wgntuniig1
+      Type: COGNITO_USER_POOLS
+      IdentitySource: method.request.header.Authorization
+      ProviderARNs:
+        - !GetAtt SbtUserPool.Arn
+
+Outputs:
+  UserPoolId:
+    Value: !Ref SbtUserPool
+    Export:
+      Name: !Sub sbt-user-pool-id-${Environment}
+
+  UserPoolClientId:
+    Value: !Ref SbtUserPoolClient
+    Export:
+      Name: !Sub sbt-user-pool-client-id-${Environment}
+
+  CognitoDomain:
+    Value: !Sub https://sbt-auth-${Environment}.auth.us-east-1.amazoncognito.com
+    Export:
+      Name: !Sub sbt-cognito-domain-${Environment}
+
+  AuthorizerId:
+    Value: !Ref SbtApiAuthorizer
+    Export:
+      Name: !Sub sbt-authorizer-id-${Environment}
